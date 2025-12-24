@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arix Signature Christmas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Merriweather:wght@900&family=Roboto+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <style>
+      body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background-color: #000000; }
+      #root { width: 100%; height: 100%; }
+      /* Custom scrollbar hide */
+      ::-webkit-scrollbar { display: none; }
+      
+      /* Stranger Things Title Style Utility */
+      .font-stranger {
+        font-family: 'Merriweather', serif;
+        font-weight: 900;
+      }
+      .text-stranger-outline {
+        color: transparent;
+        -webkit-text-stroke: 2px #E71D36;
+        text-shadow: 0 0 15px rgba(231, 29, 54, 0.6);
+      }
+    </style>
+
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              // Inferred Arix colors based on usage
+              arix: {
+                dark: '#05010a',
+                gold: '#FFD700',
+                purpleDeep: '#2E0249'
+              },
+              st: {
+                red: '#E71D36',
+                glow: '#FF0000',
+                dark: '#050505',
+                void: '#020205',
+                ash: '#8899A6'
+              }
+            },
+            fontFamily: {
+              serif: ['"Merriweather"', 'serif'],
+              mono: ['"Roboto Mono"', 'monospace'],
+            }
+          }
+        }
+      }
+    </script>
+
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@19.0.0-rc.0",
+        "react-dom/client": "https://esm.sh/react-dom@19.0.0-rc.0/client",
+        "three": "https://esm.sh/three@0.166.1",
+        "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.16.8?deps=three@0.166.1,react@19.0.0-rc.0",
+        "@react-three/drei": "https://esm.sh/@react-three/drei@9.108.3?deps=three@0.166.1,react@19.0.0-rc.0,@react-three/fiber@8.16.8",
+        "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.16.2?deps=three@0.166.1,react@19.0.0-rc.0,@react-three/fiber@8.16.8",
+        "postprocessing": "https://esm.sh/postprocessing@6.36.0?deps=three@0.166.1",
+        "framer-motion": "https://esm.sh/framer-motion@11.2.13?deps=react@19.0.0-rc.0"
+      }
+    }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="module">
+      import React, { Suspense, useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
+      import ReactDOM from 'react-dom/client';
+      import * as THREE from 'three';
+      import { Canvas, useFrame } from '@react-three/fiber';
+      import { OrbitControls, ContactShadows, Sparkles, Float, Loader } from '@react-three/drei';
+      import { EffectComposer, Bloom, Vignette, ChromaticAberration } from '@react-three/postprocessing';
+      import { motion } from 'framer-motion';
+
+      // --- Constants ---
+      const COLORS = {
+        LIGHT_RED: '#ff0033',
+        LIGHT_BLUE: '#0088ff',
+        LIGHT_YELLOW: '#ffcc00',
+        LIGHT_GREEN: '#00ff66',
+        LIGHT_WHITE: '#ffffff',
+        VOID_DARK: '#020205',
+        VOID_FOG: '#0a0a14',
+        SPORE: '#aabbee',
+        TITLE_RED: '#E71D36'
+      };
+
+      const SETTINGS = {
+        bloomThreshold: 1.0, 
+        bloomIntensity: 2.5, 
+        bloomRadius: 0.6,
+      };
+
+      // --- Foliage Component ---
+      const foliageVertexShader = `
+        uniform float uTime;
+        uniform float uMorph; 
+        
+        attribute vec3 aScatterPos;
+        attribute float aSize;
+        attribute float aRandom;
+        
+        varying float vRandom;
+        varying float vAlpha;
+
+        void main() {
+          vRandom = aRandom;
+          
+          vec3 currentPos = mix(aScatterPos, position, uMorph);
+          
+          float time = uTime * 0.5;
+          
+          vec3 noise = vec3(
+              sin(time + currentPos.y),
+              cos(time + currentPos.x * 0.5),
+              sin(time + currentPos.z * 0.5)
+          );
+
+          vec3 finalPos = currentPos + (noise * 0.1);
+
+          vec4 mvPosition = modelViewMatrix * vec4(finalPos, 1.0);
+          gl_Position = projectionMatrix * mvPosition;
+          
+          gl_PointSize = aSize * (150.0 / -mvPosition.z);
+        }
+      `;
+
+      const foliageFragmentShader = `
+        uniform vec3 uColorMain;
+        
+        varying float vRandom;
+
+        void main() {
+          vec2 center = gl_PointCoord - 0.5;
+          float dist = length(center);
+          if (dist > 0.5) discard;
+          
+          float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
+          vec3 color = uColorMain * (0.2 + 0.8 * vRandom);
+          
+          gl_FragColor = vec4(color, alpha * 0.8);
+        }
+      `;
+
+      const Foliage = ({ assembled }) => {
+        const meshRef = useRef(null);
+        
+        const uniforms = useRef({
+          uTime: { value: 0 },
+          uMorph: { value: 0 },
+          uColorMain: { value: new THREE.Color('#1a1a2e') }, 
+        });
+
+        const count = 5000; 
+        const { positions, scatterPositions, sizes, randoms } = useMemo(() => {
+          const pos = new Float32Array(count * 3);
+          const scat = new Float32Array(count * 3);
+          const sz = new Float32Array(count);
+          const rnd = new Float32Array(count);
+
+          for (let i = 0; i < count; i++) {
+              const h = Math.random(); 
+              const y = -2 + h * 6;
+              const radiusAtHeight = 3.0 * (1 - Math.pow(h, 0.7));
+              const theta = Math.random() * Math.PI * 2;
+              const r = radiusAtHeight * Math.sqrt(Math.random());
+
+              pos[i * 3] = r * Math.cos(theta);
+              pos[i * 3 + 1] = y;
+              pos[i * 3 + 2] = r * Math.sin(theta);
+
+              const sr = 10 + Math.random() * 5; 
+              const sTheta = Math.random() * Math.PI * 2;
+              const sPhi = Math.acos(2 * Math.random() - 1);
+              
+              scat[i * 3] = sr * Math.sin(sPhi) * Math.cos(sTheta);
+              scat[i * 3 + 1] = sr * Math.sin(sPhi) * Math.sin(sTheta);
+              scat[i * 3 + 2] = sr * Math.cos(sPhi);
+
+              sz[i] = Math.random() * 0.5 + 0.2; 
+              rnd[i] = Math.random(); 
+          }
+
+          return {
+              positions: pos,
+              scatterPositions: scat,
+              sizes: sz,
+              randoms: rnd
+          };
+        }, []);
+
+        useFrame((state, delta) => {
+          if (meshRef.current) {
+              uniforms.current.uTime.value = state.clock.elapsedTime;
+              
+              const targetMorph = assembled ? 1.0 : 0.0;
+              uniforms.current.uMorph.value = THREE.MathUtils.damp(
+                  uniforms.current.uMorph.value, 
+                  targetMorph, 
+                  1.5, 
+                  delta
+              );
+          }
+        });
+
+        return React.createElement('points', { ref: meshRef },
+          React.createElement('bufferGeometry', null,
+            React.createElement('bufferAttribute', { attach: "attributes-position", count: count, array: positions, itemSize: 3 }),
+            React.createElement('bufferAttribute', { attach: "attributes-aScatterPos", count: count, array: scatterPositions, itemSize: 3 }),
+            React.createElement('bufferAttribute', { attach: "attributes-aSize", count: count, array: sizes, itemSize: 1 }),
+            React.createElement('bufferAttribute', { attach: "attributes-aRandom", count: count, array: randoms, itemSize: 1 })
+          ),
+          React.createElement('shaderMaterial', {
+            vertexShader: foliageVertexShader,
+            fragmentShader: foliageFragmentShader,
+            uniforms: uniforms.current,
+            transparent: true,
+            depthWrite: false
+          })
+        );
+      };
+
+      // --- Ornaments Component ---
+      const generateOrnamentData = (count) => {
+        const temp = [];
+        const colorPalette = [
+            '#ff0033', '#0088ff', '#ffcc00', '#00ff66', '#ffffff', 
+            '#aa00ff', '#ff6600', '#ff0099', '#00ffff', '#ffdbb0',
+        ];
+
+        const points = [];
+
+        for (let i = 0; i < count; i++) {
+          const t = i / count; 
+          const h = -2 + t * 6; 
+          const angle = t * Math.PI * 30; 
+          const rBase = 2.8 * (1 - (t * 0.85)); 
+          
+          const tx = Math.cos(angle) * rBase;
+          const tz = Math.sin(angle) * rBase;
+          
+          const treePos = new THREE.Vector3(tx, h, tz);
+          points.push(treePos);
+          
+          const sr = 6 + Math.random() * 8; 
+          const sTheta = Math.random() * Math.PI * 2;
+          const sPhi = Math.acos(2 * Math.random() - 1);
+          
+          const sx = sr * Math.sin(sPhi) * Math.cos(sTheta);
+          const sy = sr * Math.sin(sPhi) * Math.sin(sTheta);
+          const sz = sr * Math.cos(sPhi);
+
+          const scale = 1.0; 
+          const hexColor = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+
+          temp.push({
+            id: i,
+            treePos,
+            scatterPos: new THREE.Vector3(sx, sy, sz),
+            scale,
+            color: new THREE.Color(hexColor)
+          });
+        }
+        return { data: temp, points };
+      };
+
+      const Wire = ({ points, assembled }) => {
+          const curve = useMemo(() => {
+              return new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.2);
+          }, [points]);
+
+          const matRef = useRef(null);
+
+          useFrame((state, delta) => {
+              if(matRef.current) {
+                  const targetOp = assembled ? 0.6 : 0.0;
+                  matRef.current.opacity = THREE.MathUtils.lerp(matRef.current.opacity, targetOp, delta * 2);
+                  matRef.current.visible = matRef.current.opacity > 0.01;
+              }
+          })
+
+          return React.createElement('mesh', null,
+              React.createElement('tubeGeometry', { args: [curve, 300, 0.03, 8, false] }),
+              React.createElement('meshBasicMaterial', { ref: matRef, color: "#111111", transparent: true, opacity: 0.6 })
+          );
+      }
+
+      const InstancedLayer = ({ data, geometry, material, assembled, dampSpeed }) => {
+        const meshRef = useRef(null);
+        const dummy = useMemo(() => new THREE.Object3D(), []);
+        
+        const currentPositions = useRef(data.map(d => d.treePos.clone())); 
+
+        useFrame((state, delta) => {
+          if (!meshRef.current) return;
+
+          const time = state.clock.elapsedTime;
+          let needsUpdate = false;
+
+          data.forEach((item, i) => {
+            const target = assembled ? item.treePos : item.scatterPos;
+            const current = currentPositions.current[i];
+            
+            const x = THREE.MathUtils.damp(current.x, target.x, dampSpeed, delta);
+            const y = THREE.MathUtils.damp(current.y, target.y, dampSpeed, delta);
+            const z = THREE.MathUtils.damp(current.z, target.z, dampSpeed, delta);
+            
+            current.set(x, y, z);
+            
+            dummy.position.copy(current);
+            
+            if (assembled) {
+                dummy.lookAt(0, current.y, 0); 
+                dummy.rotation.x += Math.sin(i)*1;
+                dummy.rotation.z += Math.cos(i)*1;
+            } else {
+                dummy.rotation.set(time * 0.5 + i, time * 0.3 + i, time * 0.7);
+            }
+
+            dummy.scale.setScalar(assembled ? 0.3 : 0.3); 
+
+            dummy.updateMatrix();
+            meshRef.current.setMatrixAt(i, dummy.matrix);
+            needsUpdate = true;
+          });
+
+          if (needsUpdate) {
+            meshRef.current.instanceMatrix.needsUpdate = true;
+          }
+        });
+
+        useEffect(() => {
+           if (meshRef.current) {
+               data.forEach((item, i) => {
+                   meshRef.current.setColorAt(i, item.color);
+               });
+               meshRef.current.instanceColor.needsUpdate = true;
+           }
+        }, [data]);
+
+        return React.createElement('instancedMesh', { ref: meshRef, args: [geometry, material, data.length] });
+      };
+
+      const Ornaments = ({ assembled }) => {
+        const { data, points } = useMemo(() => generateOrnamentData(150), []);
+        
+        const geo = useMemo(() => {
+            const points = [];
+            points.push(new THREE.Vector2(0.15, 0));
+            points.push(new THREE.Vector2(0.15, 0.3));
+            for (let i = 0; i <= 10; i++) {
+                const t = i / 10;
+                const angle = -Math.PI / 2 + t * Math.PI; 
+                const x = Math.cos(angle) * 0.3; 
+                const y = 0.3 + Math.sin(angle) * 0.5 + (t * 0.4); 
+                if (x >= 0) points.push(new THREE.Vector2(x, y));
+            }
+            points.push(new THREE.Vector2(0, 1.2));
+            return new THREE.LatheGeometry(points, 16);
+        }, []);
+
+        const mat = useMemo(() => new THREE.MeshStandardMaterial({ 
+            roughness: 0.1, 
+            metalness: 0.5,
+            emissiveIntensity: 2.0, 
+            toneMapped: false
+        }), []);
+
+        return React.createElement('group', null,
+          React.createElement(Wire, { points: points, assembled: assembled }),
+          React.createElement(InstancedLayer, { data: data, geometry: geo, material: mat, assembled: assembled, dampSpeed: 1.5 })
+        );
+      };
+
+      // --- LuxTree Component ---
+      const CentralMaw = () => {
+          return React.createElement('group', { position: [0, 0, 0.35] },
+             React.createElement('mesh', { position: [0, 0, -0.6] },
+                React.createElement('sphereGeometry', { args: [0.25, 32, 32] }),
+                React.createElement('meshBasicMaterial', { color: "#000000", toneMapped: false })
+             )
+          )
+      }
+
+      const MovingPetalMesh = () => {
+          const ref = useRef(null);
+          useFrame((state) => {
+              if(ref.current) {
+                  const t = state.clock.elapsedTime * 1.5;
+                  const openAngle = 0.7 + Math.sin(t) * 0.2; 
+                  ref.current.rotation.x = -openAngle; 
+              }
+          });
+          
+          return React.createElement('group', { ref: ref },
+              React.createElement('mesh', { position: [0, 0.5, 0] },
+                  React.createElement('coneGeometry', { args: [0.35, 1.2, 8] }),
+                  React.createElement('meshStandardMaterial', { color: "#4a0a0a", emissive: "#880000", emissiveIntensity: 1, roughness: 0.3 })
+              ),
+              React.createElement('group', { position: [0, 0.15, -0.12], rotation: [-0.1, 0, 0] },
+                  Array.from({length: 9}).map((_, i) => 
+                     React.createElement('mesh', { key: i, position: [0, 0.05 + (i * 0.09), 0], rotation: [-1.5, 0, 0] },
+                         React.createElement('coneGeometry', { args: [0.025, 0.1, 4] }),
+                         React.createElement('meshStandardMaterial', { color: "#ffffff", emissive: "#666666", roughness: 0.1 })
+                     )
+                  ),
+                  Array.from({length: 7}).map((_, i) => 
+                     React.createElement('mesh', { key: `l-${i}`, position: [-0.06, 0.1 + (i * 0.09), 0.04], rotation: [-1.5, 0, -0.3] },
+                         React.createElement('coneGeometry', { args: [0.02, 0.08, 4] }),
+                         React.createElement('meshStandardMaterial', { color: "#ffffff", emissive: "#666666", roughness: 0.1 })
+                     )
+                  ),
+                   Array.from({length: 7}).map((_, i) => 
+                     React.createElement('mesh', { key: `r-${i}`, position: [0.06, 0.1 + (i * 0.09), 0.04], rotation: [-1.5, 0, 0.3] },
+                         React.createElement('coneGeometry', { args: [0.02, 0.08, 4] }),
+                         React.createElement('meshStandardMaterial', { color: "#ffffff", emissive: "#666666", roughness: 0.1 })
+                     )
+                  )
+              )
+          )
+      }
+
+      const Petal = ({ index }) => {
+          const angle = (index / 5) * Math.PI * 2;
+          return React.createElement('group', { rotation: [0, 0, angle] },
+              React.createElement(MovingPetalMesh, null)
+          )
+      }
+
+      const DemogorgonStar = ({ assembled }) => {
+          return React.createElement(Float, { speed: 2, rotationIntensity: 0.2, floatIntensity: 0.5, position: [0, 4.5, 0] },
+              React.createElement('group', { scale: 1.2 },
+                  React.createElement(CentralMaw, null),
+                  Array.from({ length: 5 }).map((_, i) => 
+                      React.createElement(Petal, { key: i, index: i })
+                  ),
+                  React.createElement('pointLight', { 
+                      distance: 10, 
+                      intensity: assembled ? 20 : 5, 
+                      color: COLORS.TITLE_RED, 
+                      decay: 2,
+                      position: [0, 0.5, 0]
+                  })
+              )
+          )
+      }
+
+      const MicroWire = ({ points, assembled }) => {
+          const curve = useMemo(() => {
+              return new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.1);
+          }, [points]);
+
+          const matRef = useRef(null);
+
+          useFrame((state, delta) => {
+              if(matRef.current) {
+                  const targetOp = assembled ? 0.4 : 0.0;
+                  matRef.current.opacity = THREE.MathUtils.lerp(matRef.current.opacity, targetOp, delta * 3);
+                  matRef.current.visible = matRef.current.opacity > 0.01;
+              }
+          })
+
+          return React.createElement('mesh', null,
+              React.createElement('tubeGeometry', { args: [curve, 300, 0.008, 5, false] }),
+              React.createElement('meshBasicMaterial', { ref: matRef, color: "#000000", transparent: true, opacity: 0.4 })
+          )
+      }
+
+      const SurroundingLights = ({ assembled }) => {
+        const count = 75; 
+        const meshRef = useRef(null);
+        const dummy = useMemo(() => new THREE.Object3D(), []);
+
+        const { data, currentPositions, treePoints } = useMemo(() => {
+          const temp = [];
+          const points = [];
+          
+          const palette = [
+            '#FF0000', '#FF8800', '#FFFF00', '#00FF00', 
+            '#00FFFF', '#0000FF', '#9900FF', '#FF0080',
+          ];
+          
+          const turns = 12; 
+          const heightRange = 6; 
+          const topY = 4.0; 
+          
+          for(let i=0; i<count; i++) {
+            const t = i / (count - 1); 
+            const y = topY - (t * heightRange); 
+            const hNorm = (y + 2) / 6; 
+            const rBase = 2.8 * (1 - Math.max(0, hNorm * 0.9)); 
+            
+            const angle = t * Math.PI * 2 * turns;
+            const r = rBase * (0.95 + Math.random() * 0.1); 
+            
+            const x = Math.cos(angle) * r;
+            const z = Math.sin(angle) * r;
+            
+            const treePos = new THREE.Vector3(x, y, z);
+            points.push(treePos);
+
+            const sr = 8 + Math.random() * 8;
+            const sTheta = Math.random() * Math.PI * 2;
+            const sPhi = Math.acos(2 * Math.random() - 1);
+            const sx = sr * Math.sin(sPhi) * Math.cos(sTheta);
+            const sy = sr * Math.sin(sPhi) * Math.sin(sTheta);
+            const sz = sr * Math.cos(sPhi);
+            const scatterPos = new THREE.Vector3(sx, sy, sz);
+
+            const colorHex = palette[Math.floor(Math.random() * palette.length)];
+            const color = new THREE.Color(colorHex);
+            color.multiplyScalar(3.0); 
+
+            temp.push({
+              treePos,
+              scatterPos,
+              color: color,
+              scale: Math.random() * 0.5 + 0.5,
+            });
+          }
+
+          const currPos = temp.map(d => d.scatterPos.clone()); 
+          return { data: temp, currentPositions: currPos, treePoints: points };
+        }, []);
+
+        const positionsRef = useRef(currentPositions);
+
+        useFrame((state, delta) => {
+          if(!meshRef.current) return;
+          let needsUpdate = false;
+          data.forEach((d, i) => {
+             const target = assembled ? d.treePos : d.scatterPos;
+             const current = positionsRef.current[i];
+             current.lerp(target, delta * 2.0);
+             dummy.position.copy(current);
+             dummy.scale.setScalar(0.03 * d.scale); // Scale reduced to 0.03 as requested
+             dummy.updateMatrix();
+             meshRef.current.setMatrixAt(i, dummy.matrix);
+             needsUpdate = true;
+          });
+          if (needsUpdate) {
+              meshRef.current.instanceMatrix.needsUpdate = true;
+          }
+        });
+
+        useLayoutEffect(() => {
+           if(meshRef.current) {
+               data.forEach((d, i) => {
+                   meshRef.current.setColorAt(i, d.color);
+               });
+               meshRef.current.instanceColor.needsUpdate = true;
+           }
+        }, [data]);
+
+        return React.createElement('group', null,
+            React.createElement(MicroWire, { points: treePoints, assembled: assembled }),
+            React.createElement('instancedMesh', { ref: meshRef, args: [undefined, undefined, count] },
+                React.createElement('sphereGeometry', { args: [0.5, 8, 8] }),
+                React.createElement('meshBasicMaterial', { toneMapped: false })
+            )
+        )
+      }
+
+      const LuxTree = ({ assembled }) => {
+        const groupRef = useRef(null);
+        useFrame((state) => {
+          if (groupRef.current) {
+            groupRef.current.position.y = Math.sin(state.clock.elapsedTime * 0.3) * 0.2 - 0.5;
+          }
+        });
+
+        return React.createElement('group', { ref: groupRef, scale: [0.75, 0.75, 0.75] },
+          React.createElement(DemogorgonStar, { assembled: assembled }),
+          React.createElement('group', { position: [0, -0.3, 0] },
+            React.createElement(Foliage, { assembled: assembled }),
+            React.createElement(SurroundingLights, { assembled: assembled }),
+            React.createElement(Ornaments, { assembled: assembled })
+          )
+        );
+      };
+
+      // --- Effects Component ---
+      const Effects = () => {
+        return React.createElement(EffectComposer, null,
+          React.createElement(Bloom, { 
+            luminanceThreshold: 0.8, 
+            mipmapBlur: true, 
+            intensity: SETTINGS.bloomIntensity, 
+            radius: SETTINGS.bloomRadius
+          }),
+          React.createElement(ChromaticAberration, { 
+            offset: new THREE.Vector2(0.002, 0.002),
+            radialModulation: false,
+            modulationOffset: 0
+          }),
+          React.createElement(Vignette, { eskil: false, offset: 0.1, darkness: 1.3 })
+        );
+      };
+
+      // --- Scene Component ---
+      const Scene = ({ assembled }) => {
+        return React.createElement(Canvas, {
+            dpr: [1, 2], 
+            gl: { antialias: false, toneMappingExposure: 0.9 }, 
+            shadows: true,
+            camera: { position: [0, 1, 9], fov: 50 }
+          },
+          React.createElement(Suspense, { fallback: null },
+            React.createElement('color', { attach: "background", args: [COLORS.VOID_DARK] }),
+            React.createElement('fog', { attach: "fog", args: [COLORS.VOID_FOG, 5, 25] }),
+            React.createElement('ambientLight', { intensity: 0.2, color: "#445588" }),
+            React.createElement('spotLight', { 
+              position: [10, 15, 10], 
+              angle: 0.3, 
+              penumbra: 1, 
+              intensity: 15, 
+              castShadow: true, 
+              color: "#ff3300"
+            }),
+            React.createElement('pointLight', { position: [-5, 2, -10], intensity: 5, color: "#0044ff" }),
+            React.createElement('group', { position: [0, -1.8, 0] },
+                React.createElement(LuxTree, { assembled: assembled })
+            ),
+            React.createElement(Sparkles, { 
+                count: 300,
+                scale: 15,
+                size: 4,
+                speed: 0.4,
+                opacity: 0.5,
+                color: COLORS.SPORE
+            }),
+            React.createElement(ContactShadows, { 
+                resolution: 512, 
+                scale: 50, 
+                blur: 3, 
+                opacity: 0.4, 
+                far: 10, 
+                color: "#000000" 
+            }),
+            React.createElement(Effects, null),
+            React.createElement(OrbitControls, { 
+                enablePan: false, 
+                autoRotate: assembled, 
+                autoRotateSpeed: 0.3, 
+                minPolarAngle: Math.PI / 2.5, 
+                maxPolarAngle: Math.PI / 1.8,
+                maxDistance: 12,
+                minDistance: 4
+            })
+          )
+        );
+      };
+
+      // --- Overlay Component ---
+      const Button = ({ text, onClick, active }) => {
+        // Assembled state: text="RUN", active=false.
+        // Unassembled state: text="JOIN", active=true.
+        // Requirement: In assembled state (active=false), no glow, only red border.
+        
+        return React.createElement('button', {
+          onClick: onClick,
+          className: `
+            relative flex items-center justify-center px-16 py-4
+            border-2 transition-all duration-300 ease-out
+            group overflow-hidden
+            border-st-red text-st-red
+            ${active 
+              ? "bg-st-red/20 shadow-[0_0_20px_rgba(231,29,54,0.6)] hover:bg-st-red/30 hover:shadow-[0_0_30px_rgba(231,29,54,0.8)]" 
+              : "bg-transparent shadow-none hover:bg-st-red/10"
+            }
+          `
+        },
+          React.createElement('div', { className: `absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-0 pointer-events-none bg-[length:100%_2px,3px_100%] transition-opacity duration-300 ${active ? 'opacity-20' : 'opacity-10'}` }),
+          React.createElement('span', { className: "font-serif font-black tracking-[0.15em] text-lg uppercase text-center relative z-10" }, text)
+        );
+      };
+
+      const Overlay = ({ assembled, setAssembled }) => {
+        return React.createElement('main', { className: "absolute inset-0 z-10 pointer-events-none flex flex-col justify-between p-6 md:p-12" },
+          React.createElement('header', { className: "flex flex-col items-center w-full mt-4 scale-75 origin-top pointer-events-auto select-none" },
+            React.createElement(motion.div, {
+                initial: { opacity: 0, scale: 0.9 },
+                animate: { opacity: 1, scale: 1 },
+                transition: { duration: 3, ease: "easeOut" },
+                className: "text-center flex flex-col items-center"
+            },
+                React.createElement('div', { className: "w-16 h-1 bg-st-red shadow-[0_0_10px_#E71D36] mb-4" }),
+                React.createElement('h1', { className: "font-stranger text-7xl md:text-8xl tracking-tight leading-none text-stranger-outline" }, "MERRY"),
+                React.createElement('p', { className: "font-stranger text-3xl md:text-5xl tracking-[0.2em] mt-2 text-st-red drop-shadow-[0_0_10px_rgba(231,29,54,0.8)]" }, "CHRISTMAS"),
+                React.createElement('div', { className: "w-full max-w-md h-[1px] bg-gradient-to-r from-transparent via-st-red to-transparent mt-6 opacity-50" })
+            )
+          ),
+          React.createElement('div', { className: "absolute bottom-32 left-0 w-full flex justify-center pointer-events-auto" },
+            React.createElement(Button, {
+                text: assembled ? "RUN" : "JOIN",
+                onClick: () => setAssembled(!assembled),
+                active: !assembled
+            })
+          )
+        );
+      };
+
+      // --- App Component ---
+      const App = () => {
+        const [mounted, setMounted] = useState(false);
+        const [assembled, setAssembled] = useState(true);
+
+        useEffect(() => {
+          setMounted(true);
+        }, []);
+
+        if (!mounted) return null;
+
+        return React.createElement('div', { className: "relative w-full h-screen bg-arix-dark overflow-hidden selection:bg-arix-gold selection:text-arix-purpleDeep" },
+          React.createElement('div', { className: "absolute inset-0 z-0" },
+            React.createElement(Scene, { assembled: assembled })
+          ),
+          React.createElement(Overlay, { assembled: assembled, setAssembled: setAssembled }),
+          React.createElement(Loader, {
+            containerStyles: { background: '#05010a' },
+            innerStyles: { background: '#2E0249', height: 2 },
+            barStyles: { background: '#FFD700', height: 2 },
+            dataStyles: { color: '#FFD700', fontFamily: 'serif', fontSize: '0.8rem' }
+          })
+        );
+      };
+
+      // --- Root Mount ---
+      const rootElement = document.getElementById('root');
+      if (rootElement) {
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(
+          React.createElement(React.StrictMode, null,
+            React.createElement(App, null)
+          )
+        );
+      }
+    </script>
+  </body>
+</html>
